@@ -90,9 +90,6 @@ ngx_http_google_explode_kv(ngx_http_request_t * r,
   if (!dup) return NULL;
   memcpy(dup, v->data, v->len);
   
-  if (!dup) return NULL;
-  memcpy(dup, v->data, v->len);
-  
   char * pch, * sep, * brkt;
   pch = strtok_r(dup, de, &brkt);
   
@@ -154,7 +151,9 @@ ngx_http_google_debug(ngx_pool_t * pool, const char * fmt, ...)
   ngx_uint_t len = 4096;
   
   buf = ngx_pcalloc(pool, len + 1);
-  if (!buf) return fprintf(stderr, "ngx_pcalloc(%lu) failed\n", len + 1);
+  if (!buf) {
+    return fprintf(stderr, "ngx_pcalloc(%lu) failed\n", (unsigned long)len);
+  }
   
   va_list args;
   va_start(args, fmt);

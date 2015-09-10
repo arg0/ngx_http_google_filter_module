@@ -77,9 +77,10 @@ ngx_http_google_inject_subs_args(ngx_conf_t * cf,
   va_list ap;
   va_start(ap, n);
   
-  void * lcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_subs_filter_module);
-  char * rc  = ngx_http_google_inject(cf, &ngx_http_subs_filter_module,
-                                      lcf, cmd, n, ap);
+  void * slcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_subs_filter_module);
+  char * rc;
+  rc = ngx_http_google_inject(cf, &ngx_http_subs_filter_module, slcf, cmd, n, ap);
+  
   va_end(ap);
   return rc;
 }
@@ -87,44 +88,13 @@ ngx_http_google_inject_subs_args(ngx_conf_t * cf,
 static char *
 ngx_http_google_inject_subs_domain(ngx_conf_t * cf)
 {
-  ngx_http_google_loc_conf_t * glcf;
-  glcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_google_filter_module);
-  
-  ngx_http_core_srv_conf_t  *cscf;
-  cscf = ngx_http_conf_get_module_srv_conf(cf, ngx_http_core_module);
-  
-  ngx_uint_t i, len = 512;
-  char * sns_htp, * sns_ssl;
-  ngx_http_server_name_t * sns = cscf->server_names.elts, * sn;
-  
-  for (i = 0; i < cscf->server_names.nelts; i++)
-  {
-    sn = sns + i;
-    if (!sn->name.len) continue;
-    
-    sns_htp = ngx_pcalloc(cf->pool, len + 1);
-    if (!sns_htp) return NGX_CONF_ERROR;
-    
-    sns_ssl = ngx_pcalloc(cf->pool, len + 1);
-    if (!sns_ssl) return NGX_CONF_ERROR;
-    
-    ngx_snprintf((u_char *)sns_htp, len, "http://%V",  &sn->name);
-    ngx_snprintf((u_char *)sns_ssl, len, "https://%V", &sn->name);
-    
-    if (glcf->ssl) {
-      if (ngx_http_google_inject_subs_args(cf,
-                                           "subs_filter", 2,
-                                           sns_htp,
-                                           sns_ssl)) return NGX_CONF_ERROR;
-    } else {
-      if (ngx_http_google_inject_subs_args(cf,
-                                           "subs_filter", 2,
-                                           sns_ssl,
-                                           sns_htp)) return NGX_CONF_ERROR;
-    }
-  }
-  
-  return NGX_CONF_OK;
+  if (ngx_http_google_inject_subs_args(cf,
+                                       "subs_filter", 2,
+                                       "$google_schema_reverse://$google_host",
+                                       "$google_schema"      "://$google_host"))
+    return NGX_CONF_ERROR;
+  else
+    return NGX_CONF_OK;
 }
 
 static char *
@@ -136,9 +106,10 @@ ngx_http_google_inject_proxy_args(ngx_conf_t * cf,
   va_list ap;
   va_start(ap, n);
   
-  void * lcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_proxy_module);
-  char * rc  = ngx_http_google_inject(cf, &ngx_http_proxy_module,
-                                      lcf, cmd, n, ap);
+  void * plcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_proxy_module);
+  char * rc;
+  rc = ngx_http_google_inject(cf, &ngx_http_proxy_module, plcf, cmd, n, ap);
+  
   va_end(ap);
   return rc;
 }
@@ -156,33 +127,39 @@ ngx_http_google_inject_subs(ngx_conf_t * cf)
     if (ngx_http_google_inject_subs_args(cf,
                                          "subs_filter", 3,
                                          "([0-9A-Za-z.-]+\\.gstatic\\.com)",
-                                         "$host/!$1",
+                                         "$google_host/!$1",
                                          "igr"))
       break;
     
     if (ngx_http_google_inject_subs_args(cf,
                                          "subs_filter", 3,
                                          "((apis)\\.google\\.com)",
-                                         "$host/!$1",
+                                         "$google_host/!$1",
                                          "igr"))
       break;
     
     if (ngx_http_google_inject_subs_args(cf,
                                          "subs_filter", 3,
                                          "((www)|(images))\\.google\\.[0-9a-z.]+",
-                                         "$host",
+                                         "$google_host",
+                                         "igr"))
+      break;
+    
+    if (ngx_http_google_inject_subs_args(cf,
+                                         "subs_filter", 3,
+                                         "scholar\\.google\\.[0-9a-z.]+\\\\?/scholar",
+                                         "$google_host/scholar",
                                          "igr"))
       break;
     
     if (ngx_http_google_inject_subs_args(cf,
                                          "subs_filter", 3,
                                          "scholar\\.google\\.[0-9a-z.]+",
-                                         "$host/scholar",
+                                         "$google_host/scholar",
                                          "igr"))
       break;
     
-    if (ngx_http_google_inject_subs_domain(cf))
-      break;
+    if (ngx_http_google_inject_subs_domain(cf)) break;
     
     return NGX_CONF_OK;
   } while (0);
@@ -212,14 +189,15 @@ ngx_http_google_inject_proxy(ngx_conf_t * cf)
       break;
     
     if (ngx_http_google_inject_proxy_args(cf,
-                                          "proxy_pass", 1,
-                                          "$google"))
+                                          "proxy_set_header", 2,
+                                          "X-Real-Ip",
+                                          "$remote_addr"))
       break;
     
     if (ngx_http_google_inject_proxy_args(cf,
                                           "proxy_set_header", 2,
-                                          "X-Real-Ip",
-                                          "$remote_addr"))
+                                          "Accept-Encoding",
+                                          ""))
       break;
     
     if (ngx_http_google_inject_proxy_args(cf,
