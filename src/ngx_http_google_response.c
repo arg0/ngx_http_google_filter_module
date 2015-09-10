@@ -56,7 +56,7 @@ ngx_http_google_response_header_location(ngx_http_request_t    * r,
     if (!nuri.data) return NGX_ERROR;
     ngx_snprintf(nuri.data, nuri.len, "/ipv%c%V", host.data[3], &uri);
     uri = nuri;
-  } else if (ctx->enable.scholar &&
+  } else if (glcf->scholar == 1 &&
              !ngx_strncasecmp(host.data, (u_char *)"scholar", 7))
   {
     if (uri.len &&
@@ -72,13 +72,13 @@ ngx_http_google_response_header_location(ngx_http_request_t    * r,
   }
   
   ngx_str_t nv;
-  nv.len  = 8 + ctx->host->len + uri.len;
+  nv.len  = (ctx->ssl ? 8 : 7) + ctx->host->len + uri.len;
   nv.data = ngx_pcalloc(r->pool, nv.len);
   
   if (!nv.data) return NGX_ERROR;
   
   ngx_snprintf(nv.data, nv.len, "%s%V%V",
-               glcf->ssl ? "https://" : "http://",
+               ctx->ssl ? "https://" : "http://",
                ctx->host, &uri);
   *v = nv;
   
@@ -105,7 +105,7 @@ ngx_http_google_response_header_set_cookie_exempt(ngx_http_request_t    * r,
     }
     
     if (!ngx_strncasecmp(kv->key.data, (u_char *)"expires", 7)) {
-      ngx_str_set(&kv->value, "Fri, 01-Jan-2016 00:00:00 GMT");
+      ngx_str_set(&kv->value, "Fri, 01-Jan-2017 00:00:00 GMT");
     }
   }
   
@@ -113,51 +113,54 @@ ngx_http_google_response_header_set_cookie_exempt(ngx_http_request_t    * r,
 }
 
 static ngx_int_t
-ngx_http_google_response_header_set_cookie_pref(ngx_http_request_t    * r,
+ngx_http_google_response_header_sort_cookie_conf(const void * a, const void * b)
+{
+  const ngx_keyval_t * kva = a, * kvb = b;
+  if (kva->key.len < kvb->key.len) return  1;
+  if (kva->key.len > kvb->key.len) return -1;
+  return 0;
+}
+
+static ngx_int_t
+ngx_http_google_response_header_set_cookie_conf(ngx_http_request_t    * r,
                                                 ngx_http_google_ctx_t * ctx,
                                                 ngx_str_t             * v)
 {
-  if (ctx->type != ngx_http_google_type_main) return NGX_OK;
+  if (ctx->type != ngx_http_google_type_main &&
+      ctx->type != ngx_http_google_type_scholar) return NGX_OK;
+  if (ctx->ncr)                                  return NGX_OK;
   
-  ngx_uid_t i;
+  ngx_uint_t i;
   ngx_array_t * kvs  = ngx_http_google_explode_kv(r, v, ":");
   if (!kvs) return NGX_ERROR;
   
-  ngx_array_t * nkvs = ngx_array_create(r->pool, 4, sizeof(ngx_keyval_t));
-  if (!nkvs) return NGX_ERROR;
-  
+  ngx_int_t nw = 0;
   ngx_keyval_t * kv, * hd;
-
+  
   hd = kvs->elts;
   for (i = 0; i < kvs->nelts; i++) {
     kv = hd + i;
-    if (!ngx_strncasecmp(kv->key.data, (u_char *)"LD", 2)) continue;
-    if (!ngx_strncasecmp(kv->key.data, (u_char *)"CR", 2)) continue;
-    if (!ngx_strncasecmp(kv->key.data, (u_char *)"NW", 2)) continue;
-    kv = ngx_array_push(nkvs);
+    if (!ngx_strncasecmp(kv->key.data, (u_char *)"LD", 2)) {
+      if (ctx->lang->len) kv->value = *ctx->lang;
+      else {
+        ngx_str_set(&kv->value, "zh-CN");
+      }
+    }
+    if (!ngx_strncasecmp(kv->key.data, (u_char *)"NW", 2)) nw = 1;
+  }
+  
+  if (!nw) {
+    kv = ngx_array_push(kvs);
     if (!kv) return NGX_ERROR;
-    *kv = hd[i];
+    ngx_str_set(&kv->key,   "NW");
+    ngx_str_set(&kv->value, "1");
   }
 
-  kv = ngx_array_push(nkvs);
-  if (!kv) return NGX_ERROR;
+  // sort with length
+  ngx_sort(kvs->elts, kvs->nelts, sizeof(ngx_keyval_t),
+           ngx_http_google_response_header_sort_cookie_conf);
   
-  ngx_str_set(&kv->key,   "LD");
-  ngx_str_set(&kv->value, "zh-CN");
-  
-  kv = ngx_array_push(nkvs);
-  if (!kv) return NGX_ERROR;
-  
-  ngx_str_set(&kv->key,   "NW");
-  ngx_str_set(&kv->value, "1");
-  
-  kv = ngx_array_push(nkvs);
-  if (!kv) return NGX_ERROR;
-  
-  ngx_str_set(&kv->key,   "CR");
-  ngx_str_set(&kv->value, "2");
-
-  ngx_str_t * nv = ngx_http_google_implode_kv(r, nkvs, ":");
+  ngx_str_t * nv = ngx_http_google_implode_kv(r, kvs, ":");
   if (!nv) return NGX_ERROR;
   
   *v = *nv;
@@ -179,9 +182,10 @@ ngx_http_google_response_header_set_cookie(ngx_http_request_t    * r,
   for (i = 0; i < kvs->nelts; i++)
   {
     kv = hd + i;
-    if (!ngx_strncasecmp(kv->key.data, (u_char *)"PREF", 4))
+    
+    if (!ngx_strncasecmp(kv->key.data, ctx->conf->data, ctx->conf->len))
     {
-      if (ngx_http_google_response_header_set_cookie_pref(r, ctx, &kv->value)) {
+      if (ngx_http_google_response_header_set_cookie_conf(r, ctx, &kv->value)) {
         return NGX_ERROR;
       }
     }
@@ -193,10 +197,9 @@ ngx_http_google_response_header_set_cookie(ngx_http_request_t    * r,
       }
     }
     
-    if (!ngx_strncasecmp(kv->key.data, (u_char *)"domain", 6)) {
-      kv->value.len  = 1 + ctx->host->len;
-      kv->value.data = ngx_pcalloc(r->pool, kv->value.len);
-      ngx_snprintf(kv->value.data, kv->value.len, ".%V", ctx->host);
+    if (!ngx_strncasecmp(kv->key.data, (u_char *)"domain", 6))
+    {
+      kv->value = *ctx->domain;
     }
     
     if (!ngx_strncasecmp(kv->key.data, (u_char *)"path", 4)) {
@@ -206,7 +209,7 @@ ngx_http_google_response_header_set_cookie(ngx_http_request_t    * r,
   
   // unset this key
   if (!kvs->nelts) {
-    tb->key.len = 0; return NGX_OK;
+    tb->hash = 0; return NGX_OK;
   }
   
   ngx_str_t * set_cookie = ngx_http_google_implode_kv(r, kvs, "; ");
@@ -230,9 +233,6 @@ ngx_http_google_response_header_filter(ngx_http_request_t * r)
   
   ngx_http_google_ctx_t * ctx;
   ctx = ngx_http_get_module_ctx(r, ngx_http_google_filter_module);
-  
-  ngx_list_t * hds = ngx_list_create(r->pool, 4, sizeof(ngx_table_elt_t));
-  if (!hds) return NGX_ERROR;
   
   ngx_uint_t i;
   ngx_list_part_t * pt = &r->headers_out.headers.part;
@@ -262,25 +262,55 @@ ngx_http_google_response_header_filter(ngx_http_request_t * r)
         return NGX_ERROR;
       }
     }
-    
-    if (!tb->key.len) continue;
-    tb = ngx_list_push(hds);
-    if (!tb) return NGX_ERROR;
-    
-    *tb = hd[i];
   }
   
-  tb = ngx_list_push(hds);
+  tb = ngx_list_push(&r->headers_out.headers);
   if (!tb) return NGX_ERROR;
   
   // add server header
   ngx_str_set(&tb->key, "Server");
-  tb->value = *ctx->host;
-  tb->hash  = ngx_hash_key(tb->key.data, tb->key.len);
+  tb->hash       = 1;
+  tb->value.len  = ctx->host->len;
+  tb->value.len += sizeof(NGX_HTTP_GOOGLE_FILTER_MODULE_VERSION);
+  tb->value.data = ngx_pcalloc(r->pool, tb->value.len);
+  // host / version
+  ngx_snprintf(tb->value.data, tb->value.len,
+               "%V/" NGX_HTTP_GOOGLE_FILTER_MODULE_VERSION,
+               ctx->host);
   
   // replace with new headers
-  r->headers_out.server  = tb;
-  r->headers_out.headers = *hds;
+  r->headers_out.server = tb;
   
   return gmcf->next_header_filter(r);
+}
+
+ngx_int_t
+ngx_http_google_response_body_filter(ngx_http_request_t * r, ngx_chain_t * in)
+{
+  ngx_http_google_main_conf_t * gmcf;
+  gmcf = ngx_http_get_module_main_conf(r, ngx_http_google_filter_module);
+  
+  ngx_http_google_loc_conf_t * glcf;
+  glcf = ngx_http_get_module_loc_conf(r, ngx_http_google_filter_module);
+  if (glcf->enable != 1) return gmcf->next_body_filter(r, in);
+  
+  ngx_http_google_ctx_t * ctx;
+  ctx = ngx_http_get_module_ctx(r, ngx_http_google_filter_module);
+  
+  if (!ctx->robots)      return gmcf->next_body_filter(r, in);
+  if (glcf->robots == 1) return gmcf->next_body_filter(r, in);
+  
+  ngx_chain_t out;
+  ngx_memzero(&out, sizeof(ngx_chain_t));
+  
+  ngx_str_t text;
+  ngx_str_set(&text, "User-agent: *" CRLF
+                     "Disallow: /"   CRLF);
+  
+  out.buf = ngx_create_temp_buf(r->pool, text.len);
+  if (!out.buf) return NGX_ERROR;
+  out.buf->last_buf = 1;
+  
+  out.buf->last = ngx_copy(out.buf->last, text.data, text.len);
+  return gmcf->next_body_filter(r, &out);
 }
